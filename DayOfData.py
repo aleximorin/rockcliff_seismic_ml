@@ -94,7 +94,8 @@ class SeismicData:
                             continue
                         work_traces.append([tmp0[nt], tmp1[nt], tmp2[nt]])
                 else:
-                    work_traces.append(traces)
+                    if traces[0].data.size >= length_threshold * traces[0].stats.sampling_rate:
+                        work_traces.append(traces)
 
                 for wtraces in work_traces:
                     ftraces = []
@@ -123,7 +124,8 @@ class SeismicData:
                             continue
                         work_traces.append(tr)
                 else:
-                    work_traces.append(traces[0])
+                    if traces[0].data.size >= length_threshold * traces[0].stats.sampling_rate:
+                        work_traces.append(traces[0])
 
                 for tr in work_traces:
                     ftrace = sosfiltfilt(sos, tr.data)
@@ -139,30 +141,6 @@ class SeismicData:
                             subw_t.append( [(tr.stats.starttime + subw[n][0] * tr.stats.delta).timestamp,
                                             (tr.stats.starttime + subw[n][1] * tr.stats.delta).timestamp] )
                             separate_windows.append(subw_t)
-
-        #     try:
-        #         ftraces = sosfiltfilt(sos, traces).astype(np.int64)
-        #     except ValueError as e:
-        #         print(e)
-        #         continue
-        #
-        #     # stalta computation
-        #     if ftraces.shape[0] == 1:
-        #         cf = ftraces.flatten()
-        #     else:
-        #         # we have 3C data, take sum of absolute values of components
-        #         cf = np.sum(np.abs(ftraces, dtype=np.int64), axis=0, dtype=np.int64)
-        #
-        #     for (sta, lta) in couples:
-        #         nsta = sta * self.frequency
-        #         nlta = lta * self.frequency
-        #         signal = classic_sta_lta(cf, nsta, nlta)
-        #         signals.append(signal)
-        #
-        # separate_windows = []
-        # for stalta in signals:
-        #     subw = trigger_onset(stalta, in_threshold, out_threshold)
-        #     separate_windows.append(subw)
 
         if len(separate_windows) == 0:
             return None

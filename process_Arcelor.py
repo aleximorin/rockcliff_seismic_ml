@@ -36,6 +36,7 @@ import DataStructures
 from DayOfData import SeismicData, save_the_waves
 from Signal import Signal
 
+
 # %%  Setup
 
 if 'taiga' in socket.gethostname():
@@ -43,10 +44,12 @@ if 'taiga' in socket.gethostname():
 else:
     base_folder = '/Volumes/Arcelor'
 main_folder = base_folder + '/sds'
-out_folder = base_folder+'/output'
+out_folder = base_folder + '/output'
+fig_folder = '/Users/giroux/CloudStation/Projets/ArcelorMittal/0_Rapport/figures'
 
 ds = DataStructures.SeisCompP()
 _ = ds.scan_directory(main_folder)
+
 
 try:
     os.makedirs(out_folder)
@@ -55,6 +58,15 @@ except OSError:
 
 root_path = main_folder
 client = Client(root_path)
+
+geophones = []
+for _, stn in client.get_all_stations():
+    geophones.append(stn)
+
+Signal.geophones = geophones
+Signal.xyz = ['E', 'N', 'Z']
+with open(os.path.join(out_folder, 'config.p'), 'wb') as f:
+    pickle.dump((Signal.geophones, Signal.xyz), f)  # save because class variables were changed from default
 
 dt = 3600 * 12
 t0 = UTCDateTime('2018-09-07')
@@ -68,18 +80,22 @@ N, Wn = signal.buttord(wp=125.0, ws=150.0, gpass=3.0, gstop=40.0, fs=fs)
 filter_kw=dict(N=N, Wn=Wn, btype='lowpass', fs=fs, output='sos')
 sos = signal.butter(**filter_kw)
 
-do_mk_waves = True
+do_mk_waves = False
 do_comp_features = False
 do_comp_features_pool = False
 do_analysis = False
-do_clustering = False
+do_clustering = True
 do_plot_traces = False
 
 n_processes = 6
 
+nclusters = 3
+
+
 # %% Plotting parameters
 
-colors = ['#66c2a5','#fc8d62','#8da0cb']
+# colors = ['#66c2a5','#fc8d62','#8da0cb']
+colors = ['C0', 'C1', 'C2', 'C3', 'C4', 'C5']
 colormaps = [mcolors.LinearSegmentedColormap.from_list("my_custom_map", ['white', color]) for color in colors]
 markers = ['.', '^', 'x']
 
@@ -94,7 +110,6 @@ def plot_ellipse(ax, xy, cov, **kwargs):
 
     ell = Ellipse(xy=xy, width=width, height=height, angle=angle, **kwargs)
     ax.add_artist(ell)
-
 
 def annotate_axs(axs, x=0.01, y=0.99):
     letters = 'abcdefghijklmnopqrstuvwxyz'
@@ -117,9 +132,8 @@ def annotate_axs(axs, x=0.01, y=0.99):
 
 def process_batch_waves(batch):
 
-    i = 1
     _nbatch = len(batch)
-    for n in batch:
+    for i, n in enumerate(batch):
         t = t0 + n * dt
 
         print(f'Worker {os.getpid()} - Analyzing {t} to {t + dt}, {i} out of {_nbatch:.0f}', flush=True)
@@ -142,50 +156,23 @@ def process_batch_waves(batch):
         path = os.path.join(out_folder,
                             t.datetime.strftime(save_fmt) + '_' + (t + dt).datetime.strftime(save_fmt) + '.bz2')
         save_the_waves(waves, path)
-        i += 1
 
 def mk_waves():
     nbatch = int((t1 - t0) / dt + 0.0000001)
     chunk_size = 5
     batch_chunks = [range(nbatch)[i:i + chunk_size] for i in range(0, nbatch, chunk_size)]
 
+    print(f'Time period splitted in {nbatch} batches')
+
     # process_batch_waves(batch_chunks[0])
     with mp.Pool(processes=n_processes) as pool:
         pool.map(process_batch_waves, batch_chunks)
-
-    # i = 1
-    # for n in range(nbatch):
-    #     t = t0 + n * dt
-    #
-    #     print(f'\rAnalyzing {t} to {t+dt}, {i} out of {nbatch:.0f}', end='')
-    #     sd = SeismicData(t, t+dt - 1/fs, client)
-    #     if sd.nsamples is None:
-    #         continue
-    #
-    #     windows = sd.multi_stalta(couples=((1, 60), (2.5, 60)),
-    #                                 in_threshold=10,
-    #                                 out_threshold=2,
-    #                                 join_threshold=3,
-    #                                 filter_kw=filter_kw)
-    #     if windows is None:
-    #         continue
-    #
-    #     waves = sd.partition_signal(windows)
-    #     if len(waves) == 0:
-    #         continue
-    #
-    #     path = os.path.join(out_folder, t.datetime.strftime(save_fmt) + '_' + (t+dt).datetime.strftime(save_fmt) + '.bz2')
-    #     save_the_waves(waves, path)
-    #     i += 1
-
-    with open(os.path.join(out_folder, 'config.p'), 'wb') as f:
-        pickle.dump((Signal.geophones, Signal.xyz), f)    # save in case class variables were changed from default
 
 
 # %% Compute features
 
 def process_batch_features(batch_files):
-    with open(os.path.join('/Volumes/Arcelor/output_lp', 'config.p'), 'rb') as f:
+    with open(os.path.join(out_folder, 'config.p'), 'rb') as f:
         tmp = pickle.load(f)
         Signal.geophones = tmp[0]
         Signal.xyz = tmp[1]
@@ -211,7 +198,6 @@ def process_batch_features(batch_files):
                 # df = pd.concat([df, pd.Series()], ignore_index=True, axis=1)
                 print(f'\n    Exception with {os.path.basename(file)}:', e, ', skipping')
     return _df
-
 
 def comp_features(_files):
     df = pd.DataFrame()
@@ -284,7 +270,6 @@ def analysis():
             Xdf = Xdf.drop(key, axis=1)
     Xdf.to_csv(os.path.join(out_folder, 'classified_signals_pca_features.csv'))
 
-
     pca = PCA()
     X = pca.fit_transform(Xdf)
     plt.subplot(221)
@@ -303,6 +288,7 @@ def analysis():
     plt.gca().set_aspect(1)
     plt.show()
 
+
 # %% Clustering
 
 def clustering():
@@ -318,8 +304,9 @@ def clustering():
     pca = PCA()
     X = pca.fit_transform(Xdf)
 
-    ncomponents = 25
-    nclusters = 3
+    expl = np.cumsum(pca.explained_variance_ratio_)
+    ncomponents = 1 + np.where(expl>0.95)[0][0]
+
     np.random.seed(42069)
     clf = GaussianMixture(n_components=nclusters)
     labels = clf.fit_predict(X[:, :ncomponents])
@@ -343,13 +330,17 @@ def clustering():
         cc = labels == c
         counts[c] = cc.sum()
 
-        x, y = X[cc, :2].T
+        # x, y = X[cc, :2].T
 
-        xy = clf.means_[[0, 2, 1][c], :2]
-        cov = clf.covariances_[[0, 2, 1][c], :2, :2]
+        # xy = clf.means_[[0, 2, 1][c], :2]
+        # cov = clf.covariances_[[0, 2, 1][c], :2, :2]
+        xy = clf.means_[c, :2]
+        cov = clf.covariances_[c, :2, :2]
 
+        # plot_ellipse(ax=axs[1], xy=(xy), cov=cov, fc=colors[c], ec=colors[c], lw=3, alpha=0.8,
+        #              zorder=1 + nclusters - covorder[[0, 2, 1][c]])
         plot_ellipse(ax=axs[1], xy=(xy), cov=cov, fc=colors[c], ec=colors[c], lw=3, alpha=0.8,
-                     zorder=1 + nclusters - covorder[[0, 2, 1][c]])
+                     zorder=1 + nclusters - covorder[c])
         patches.append(Rectangle([0, 0], 1, 1, lw=0, fc=colors[c], label=c))
 
     # axs[0].set_aspect(1)
@@ -382,7 +373,7 @@ def clustering():
     annotate_axs(axs, x=0.02, y=0.98)
 
     # fig.patch.set_facecolor('none')
-    plt.savefig(os.path.join(out_folder, 'clusters_pca_features.pdf'))
+    plt.savefig(os.path.join(fig_folder, f'clusters_pca_features_{nclusters}clust.pdf'))
     plt.show()
 
     dates_clusters = []
@@ -394,10 +385,12 @@ def clustering():
         d = np.sqrt(np.sum((X[:, :ncomponents] - np.tile(x0, (X.shape[0], 1)))**2, axis=1))
         d[np.logical_not(cc)] = d.max()
         ind_x0 = np.argsort(d)
-        dates_clusters.append(tuple(dates.values[ind_x0[:3]]))
+        # dates_clusters.append(tuple(dates.values[ind_x0[:2]]))
+        dates_clusters.append((dates.values[ind_x0[0]],))
 
     with open(os.path.join(out_folder, 'dates_clusters.p'), 'wb') as f:
         pickle.dump(dates_clusters, f)
+
 
 # %%  traces for each cluster
 
@@ -443,35 +436,38 @@ def plot_traces():
                         continue
                     else:
                         plt.figure(figsize=(12, 4))
-                        plt.plot(num2date(t.t), data[Signal.xyz.index('Z'), :], color='C1')
-                        plt.plot(num2date(t.t), signal.sosfiltfilt(sos, data[Signal.xyz.index('Z'), :]),
-                                 color='C0', alpha=0.5)
+                        plt.plot(num2date(t.t), data[Signal.xyz.index('Z'), :], color='k')
+                        # plt.plot(num2date(t.t), signal.sosfiltfilt(sos, data[Signal.xyz.index('Z'), :]),
+                        #          color='C0', alpha=0.5)
                         plt.title(f'{date[:10].replace('.', '-')} Cluster {nc} - ' + g + 'Z')
                         plt.xlabel('Time')
                         plt.tight_layout()
+                        plt.savefig(os.path.join(fig_folder, f'traces_cluster_{nc}_{g}.pdf'))
                         plt.show()#block=False)
                 else:
                     fig, ax = plt.subplots(3, 1, figsize=(12, 12))
-                    ax[0].plot(num2date(t.t), data[Signal.xyz.index('E'), :], color='C1')
-                    ax[0].plot(num2date(t.t), signal.sosfiltfilt(sos, data[Signal.xyz.index('E'), :]),
-                               color='C0', alpha=0.5)
+                    ax[0].plot(num2date(t.t), data[Signal.xyz.index('E'), :], color='k')
+                    # ax[0].plot(num2date(t.t), signal.sosfiltfilt(sos, data[Signal.xyz.index('E'), :]),
+                    #            color='C0', alpha=0.5)
                     ax[0].set_title(f'{date[:10].replace('.', '-')} Cluster {nc} - ' + g + ' E' )
 
-                    ax[1].plot(num2date(t.t), data[Signal.xyz.index('N'), :], color='C1')
-                    ax[1].plot(num2date(t.t), signal.sosfiltfilt(sos, data[Signal.xyz.index('N'), :]),
-                               color='C0', alpha=0.5)
+                    ax[1].plot(num2date(t.t), data[Signal.xyz.index('N'), :], color='k')
+                    # ax[1].plot(num2date(t.t), signal.sosfiltfilt(sos, data[Signal.xyz.index('N'), :]),
+                    #            color='C0', alpha=0.5)
                     ax[1].set_title(f'{date[:10].replace('.', '-')} Cluster {nc} - ' + g + ' N' )
 
-                    ax[2].plot(num2date(t.t), data[Signal.xyz.index('Z'), :], color='C1')
-                    ax[2].plot(num2date(t.t), signal.sosfiltfilt(sos, data[Signal.xyz.index('Z'), :]),
-                               color='C0', alpha=0.5)
+                    ax[2].plot(num2date(t.t), data[Signal.xyz.index('Z'), :], color='k')
+                    # ax[2].plot(num2date(t.t), signal.sosfiltfilt(sos, data[Signal.xyz.index('Z'), :]),
+                    #            color='C0', alpha=0.5)
                     ax[2].set_title(f'{date[:10].replace('.', '-')} Cluster {nc} - ' + g + ' Z' )
                     ax[2].set_xlabel('Time')
                     plt.tight_layout()
+                    plt.savefig(os.path.join(fig_folder, f'traces_cluster_{nc}_{g}.pdf'))
                     plt.show()#block=False)
 
 
 # %% main
+
 if __name__ == '__main__':
 
     if do_mk_waves:

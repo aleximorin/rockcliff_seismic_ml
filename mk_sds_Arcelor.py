@@ -16,14 +16,15 @@ import os
 
 import numpy as np
 import obspy
+from obspy.io.mseed.util import get_start_and_end_time
 
 
 segy_dir = '/Volumes/Data0/Arcelor/data'
-sds_dir = '/Volumes/Arcelor/sds'
+sds_dir = '/Volumes/Data2/Arcelor/sds'
 
 network = 'UQ'
 
-n_processes = 6
+n_processes = 4
 
 def get_stn_infos(stn):
 
@@ -159,12 +160,26 @@ def process_day(day_dirs):
             # reset seed_file to value at start of loop
             seed_file = os.path.join(sds_dir, year, network)
 
+def already_done(stn, year, month, day):
+    # if we have a file for GPZ channel of 1st geophone, station was processed already
+    starttime = obspy.UTCDateTime(year, month, day)
+    fname = network+f'.DA{stn}1..GPZ.D.{year}.{starttime.julday:03d}'
+    fname = os.path.join(sds_dir, str(year), network, f'DA{stn}1', 'GPZ.D', fname)
+    if os.path.isfile(fname):
+        try:
+            # basic check to see if we have a valid file
+            _ = get_start_and_end_time(fname)
+            return True
+        except:
+            return False
+    return False
 
 if __name__ == '__main__':
 
     if not os.path.exists(sds_dir):
         os.makedirs(sds_dir)
 
+    print('Building list of directories to process')
     # find 'day' directories that contain segy files
     day_dir = []
     for stn in range(1, 5):
@@ -173,11 +188,16 @@ if __name__ == '__main__':
                 for day in range(1, 32):
                     dirname = os.path.join(segy_dir, f'stn{stn}_5s', str(year), f'{month:02d}', f'{day:02d}')
                     if os.path.isdir(dirname):
-                        day_dir.append(dirname)
+                        if not already_done(stn, year, month, day):
+                            print(f'  stn{stn}_5s', str(year), f'{month:02d}', f'{day:02d}  added to list')
+                            day_dir.append(dirname)
+                        else:
+                            print(f'  stn{stn}_5s', str(year), f'{month:02d}', f'{day:02d}  already done')
 
     chunk_size = 5
     dir_chunks = [day_dir[i:i + chunk_size] for i in range(0, len(day_dir), chunk_size)]
 
+    print('Starting conversion')
     # process_day(day_dir)
     with mp.Pool(processes=n_processes) as pool:
         pool.map(process_day, dir_chunks)
