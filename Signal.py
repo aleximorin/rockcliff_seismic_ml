@@ -4,11 +4,10 @@ import pandas as pd
 import datetime
 
 from scipy.signal import hilbert, butter, filtfilt, periodogram, spectrogram, find_peaks
-from scipy.integrate import trapz
+from scipy.integrate import trapezoid as trapz
 from scipy.stats import skew, kurtosis
 
 import mplstereonet as pst
-
 
 def yearday_to_date(yearday):
     year = yearday[:4]
@@ -25,9 +24,8 @@ def signaltonoise(a, axis=-1):
     return (abs(np.where(sd == 0, 0, m/sd)))
 
 
-def polarize(ogtrace, noise_threshold=None, plot3d=False):
-    # NEZ sorted trace to ENZ sorted trace
-    trace = ogtrace[[1, 0, -1]]
+def polarize(trace, noise_threshold=None, plot3d=False):
+    # traces expected ENZ sorted
 
     if noise_threshold is not None:
         mask = np.linalg.norm(trace, axis=0) < noise_threshold * np.std(trace)
@@ -97,7 +95,10 @@ def polarize(ogtrace, noise_threshold=None, plot3d=False):
 
 
 class Signal:
-    def __init__(self, t: np.array, waves: np.array, day: datetime.date, rockfall_times: tuple):
+    geophones = ('00368', '00380', '00400')
+    xyz = ('N', 'E', 'Z')
+
+    def __init__(self, t: np.ndarray, waves: np.ndarray, day: datetime.date, rockfall_times: tuple):
 
         self.t = t
         self.waves = waves
@@ -118,15 +119,14 @@ class Signal:
         x = (self.t - self.t[0]) * 3600 * 24
         freq, powers = periodogram(self.waves[:, :, self.rockfall_times[0]:self.rockfall_times[1]], 1000,
                                    scaling='spectrum')
-        geophones = ('00368', '00380', '00400')
-        xyz = ('N', 'E', 'Z')
+
         for i, station in enumerate(self.waves):
             subaxs = axs[i]
 
             for j, wave in enumerate(station):
                 wax, pax = subaxs[j]
                 wax.plot(x, wave, c='k', alpha=1)
-                wax.set_ylabel(xyz[j], rotation=0, va='center', ha='center')
+                wax.set_ylabel(self.xyz[j], rotation=0, va='center', ha='center')
                 maxima = np.max(np.abs(wax.get_ylim()))
                 ylim = (-maxima, maxima)
                 wax.fill_betweenx(ylim, x[self.rockfall_times[0]], x[self.rockfall_times[1]], fc='red', alpha=0.5)
@@ -145,7 +145,7 @@ class Signal:
                 axs[i, j, 1].set_position(box)
             xhalf = (subaxs[0, 0].get_position().x0 + subaxs[0, -1].get_position().x1) / 2
             yhalf = subaxs[0, 1].get_position().y1 + 0.02
-            plt.figtext(xhalf, yhalf, f'Station {geophones[i]}', ha='center', va='center', size='x-large')
+            plt.figtext(xhalf, yhalf, f'Station {self.geophones[i]}', ha='center', va='center', size='x-large')
         fig.align_ylabels(axs[:, :, 0])
         fig.align_ylabels(axs[:, :, 1])
         plt.text(0.01, 0.012, self.day.strftime('%Y-%m-%d %H:%M:%S'), transform=fig.transFigure)
@@ -158,7 +158,8 @@ class Signal:
         for i, geo in enumerate(self.waves):
             if np.any(geo.std(axis=-1) == 0):
                 continue
-            rectilinearity, planarity, azimuth, incidence, l1, l2, l3 = polarize(geo)
+            tr = geo[[self.xyz.index('E'), self.xyz.index('N'), self.xyz.index('Z')]]
+            rectilinearity, planarity, azimuth, incidence, l1, l2, l3 = polarize(tr)
             polarized_waves.append(np.array([l1, l2, l3]))
         polarized_waves = np.vstack(w for w in polarized_waves)
         cov = np.corrcoef(polarized_waves)
@@ -166,8 +167,7 @@ class Signal:
         im = ax.imshow(cov, vmin=-1, vmax=1, alpha=1)
         major = np.arange(0, 9)
         minor = np.arange(0, 9, 3) - 0.5
-        directions = ['N', 'E', 'Z', 'N', 'E', 'Z', 'N', 'E', 'Z']
-        geophones = ['00368', '00380', '00400']
+        directions = self.xyz * len(self.geophones)
         ax.set_xticks(major)
         ax.set_yticks(major)
         ax.set_xticklabels(directions)
@@ -176,7 +176,7 @@ class Signal:
         ax.set_yticks(minor, minor=True)
         ax.grid(which='minor', lw=3, c='w')
         ax.xaxis.tick_top()
-        for g, x in zip(geophones, minor):
+        for g, x in zip(self.geophones, minor):
             ax.text(-1, x + 1.5, g, ha='center', va='center', rotation=90)
             ax.text(x + 1.5, -1.1, g, ha='center', va='center')
         ax.tick_params('both', which='both', length=0)
@@ -196,20 +196,25 @@ class Signal:
         fullwaves = np.vstack([w for w in self.waves])[:, self.rockfall_times[0]:self.rockfall_times[1]]
         data = {}
 
-        groupedwaves = fullwaves.reshape(3, 3, -1)
+        # groupedwaves = fullwaves.reshape(3, 3, -1)
+        groupedwaves = self.waves[:, :, self.rockfall_times[0]:self.rockfall_times[1]]
+        if groupedwaves.size == 0:
+            return pd.Series()
 
         # polarity attributes
         recs, plans, azis, incs = [], [], [], []
         polarized_waves = []
-        geophones = ['00368', '00380', '00400']
         for i, geo in enumerate(groupedwaves):
-            if np.any(geo.std(axis=-1) == 0):
+            if np.any(np.isnan(geo)):
                 continue
-            rectilinearity, planarity, azimuth, incidence, l1, l2, l3 = polarize(geo)
+            elif np.any(geo.std(axis=-1) == 0):
+                continue
+            tr = geo[[self.xyz.index('E'), self.xyz.index('N'), self.xyz.index('Z')]]
+            rectilinearity, planarity, azimuth, incidence, l1, l2, l3 = polarize(tr)
             polarized_waves.append(np.array([l1, l2, l3]))
 
-            data[f'{geophones[i]}_BEARING'] = azimuth
-            data[f'{geophones[i]}_PLUNGE'] = incidence
+            data[f'{self.geophones[i]}_BEARING'] = azimuth
+            data[f'{self.geophones[i]}_PLUNGE'] = incidence
 
             recs.append(rectilinearity)
             plans.append(planarity)
@@ -249,22 +254,13 @@ class Signal:
         abscorrMIN = np.min(abscorrmat)
         abscorrRANGE = abscorrMAX - abscorrMIN
 
-        crosscorrelations = []
-        for i, sw1 in enumerate(groupedwaves):
-            for j, sw2 in enumerate(groupedwaves[i + 1:], start=1):
-                for dim in range(3):
-                    if sw1[dim].sum() != 0 and sw2[dim].sum() != 0:
-                        cc = np.correlate(sw1[dim], sw2[dim], mode='full')[int(len(fullwaves.T)) - 1:]
-                        crosscorrelations.append(np.argmax(cc))
-
-        """corrlagMAX = np.max(crosscorrelations)
-        corrlagMIN = np.min(crosscorrelations)
-        corrlagAVG = np.mean(crosscorrelations)
-        corrlagMED = np.median(crosscorrelations)
-        corrlagSTD = np.std(crosscorrelations)"""
-
+        fullwaves[np.isnan(fullwaves)] = 0
         # we take the wave with the strongest signal to noise ratio
+        # Suppress the "invalid value encountered in divide" warning
+        np.seterr(invalid='ignore', divide='ignore')
         waves = fullwaves[signaltonoise(fullwaves).argmax()]
+        np.seterr(invalid='warn', divide='warn')
+
         waves = waves[None, :]  # lazy not rewriting the code
 
         # basic statistics relative to some boring paper
@@ -317,8 +313,9 @@ class Signal:
             data[f'dftENERGY_{quantiles[q]}-{quantiles[q+1]}'] = suby.sum(axis=1).mean()
 
         DATE = self.day
+        MONTH = DATE.month
 
-        # keeps every variables named with uppercase letters to a dictionary
+        # keeps every variable named with uppercase letters to a dictionary
         variable_dict = locals().copy()
         for key, variable in variable_dict.items():
             for l in key:
@@ -327,4 +324,3 @@ class Signal:
                     break
 
         return pd.Series(data)
-
